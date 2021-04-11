@@ -1,0 +1,21 @@
+{
+  "editor.formatOnSave": true,
+  "editor.formatOnSaveTimeout": 300000,
+  "python.pythonPath": ".venv/bin/python",
+  "python.formatting.provider": "autopep8",
+  "python.linting.pylintEnabled": false,
+  "python.linting.pycodestyleEnabled": true,
+  "python.linting.flake8Enabled": false,
+  "python.linting.enabled": true,
+  "python.linting.lintOnSave": true,
+  "autoDocstring.docstringFormat": "google",
+  "python.formatting.autopep8Args": [
+    "--max-line-length",
+    "120",
+    "--experimental",
+    "in-place",
+    "aggressive"
+  ],
+  "python.linting.pycodestyleArgs": ["--max-line-length=120"],
+  "cSpell.words": ["gampi"]
+}
