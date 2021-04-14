@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import numpy as np 
 import math 
 import data
-from utils import nearest_neighbors
+from utils import nearest_neighbors, get_indices
 
 from torch import nn
 
@@ -30,6 +30,7 @@ class DETM(nn.Module):
         self.t_drop = nn.Dropout(args.enc_drop)
         self.delta = args.delta
         self.train_embeddings = args.train_embeddings
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.theta_act = self.get_activation(args.theta_act)
 
@@ -123,7 +124,16 @@ class DETM(nn.Module):
             kl = -0.5 * torch.sum(1 + q_logsigma - q_mu.pow(2) - q_logsigma.exp(), dim=-1)
         return kl
 
-    def get_alpha(self): ## mean field
+    def get_alpha(self):
+        """
+        ## mean field
+
+        alpha is the  embeding is the topic embendding , 
+        basically for each timestamp how the topic is represented
+
+        Returns:
+            [type]: [description]
+        """
         alphas = torch.zeros(self.num_times, self.num_topics, self.rho_size).to(device)
         kl_alpha = []
 
@@ -145,14 +155,21 @@ class DETM(nn.Module):
 
     def get_eta(self, rnn_inp):
         ## structured amortized inference
+        """
+        eta is a latent variable to which the modele depend
+
+        Args:
+            rnn_inp ([type]): [description]
+
+        Returns:
+            [type]: [description]
+        """
         inp = self.q_eta_map(rnn_inp).unsqueeze(1)
         hidden = self.init_hidden()
         output, _ = self.q_eta(inp, hidden)
         output = output.squeeze()
-
         etas = torch.zeros(self.num_times, self.num_topics).to(device)
         kl_eta = []
-
         inp_0 = torch.cat([output[0], torch.zeros(self.num_topics,).to(device)], dim=0)
         mu_0 = self.mu_q_eta(inp_0)
         logsigma_0 = self.logsigma_q_eta(inp_0)
@@ -179,8 +196,11 @@ class DETM(nn.Module):
         """
         ## amortized inference
         Returns the topic proportions.
+        theta is the topic proportion per document
         """
+        print(times.shape, "getting the times")
         eta_td = eta[times.type('torch.LongTensor')]
+        print(eta_td.shape, "getting the eta_td")
         inp = torch.cat([bows, eta_td], dim=1)
         q_theta = self.q_theta(inp)
         if self.enc_drop > 0:
@@ -236,9 +256,10 @@ class DETM(nn.Module):
         nhid = self.eta_hidden_size
         return (weight.new_zeros(nlayers, 1, nhid), weight.new_zeros(nlayers, 1, nhid))
 
-    def train_for_epoch(self, epoch, args, train_data):
+    def train_for_epoch(self, epoch, args, train_data_with_time, train_rnn_inp):
         """Train DETM on data for one epoch.
         """
+        train_data, train_times = data.get_time_columns(train_data_with_time)
         self.train()
         acc_loss = 0
         acc_nll = 0
@@ -246,20 +267,29 @@ class DETM(nn.Module):
         acc_kl_eta_loss = 0
         acc_kl_alpha_loss = 0
         cnt = 0
-        indices = torch.randperm(args.num_docs_train)
+        indices = torch.randperm(train_data.shape[0])
         indices = torch.split(indices, args.batch_size)
         optimizer = self.get_activation(args.optimizer)
         for idx, ind in enumerate(indices):
             optimizer.zero_grad()
             self.zero_grad()
-            data_batch, times_batch = data.get_batch(train_data, ind, args.vocab_size, args.emb_size, temporal=True, times=train_times)
+            data_batch, times_batch = data.get_batch(train_data,
+                                                     ind,
+                                                     self.device,
+                                                     train_times)
+            times_batch = get_indices(train_times, times_batch)
             sums = data_batch.sum(1).unsqueeze(1)
+            times_batch = torch.from_numpy(times_batch)
             if args.bow_norm:
                 normalized_data_batch = data_batch / sums
             else:
                 normalized_data_batch = data_batch
 
-            loss, nll, kl_alpha, kl_eta, kl_theta = self(data_batch, normalized_data_batch, times_batch, train_rnn_inp, args.num_docs_train)
+            loss, nll, kl_alpha, kl_eta, kl_theta = self.forward(data_batch,
+                                                                 normalized_data_batch,
+                                                                 times_batch,
+                                                                 train_rnn_inp,
+                                                                 train_data.shape[0])
             loss.backward()
             if args.clip > 0:
                 torch.nn.utils.clip_grad_norm_(self.parameters(), args.clip)
@@ -319,7 +349,7 @@ class DETM(nn.Module):
             queries = ['economic', 'assembly', 'security', 'management', 'debt', 'rights',  'africa']
             try:
                 embeddings = self.rho.weight  # Vocab_size x E
-            except:
+            except Exception:
                 embeddings = self.rho         # Vocab_size x E
             neighbors = []
             for word in queries:
@@ -340,7 +370,7 @@ class DETM(nn.Module):
             etas[t] = self.mu_q_eta(inp_t)
         return etas
 
-    def get_eta(self, source, valid_rnn_inp, test_1_rnn_inp):
+    def get_eta_completion(self, source, valid_rnn_inp, test_1_rnn_inp):
         self.eval()
         with torch.no_grad():
             if source == 'val':
@@ -350,7 +380,7 @@ class DETM(nn.Module):
                 rnn_1_inp = test_1_rnn_inp
                 return _eta_helper(rnn_1_inp)
 
-    def get_theta(self, eta, bows):
+    def get_theta_no_inference(self, eta, bows):
         self.eval()
         with torch.no_grad():
             inp = torch.cat([bows, eta], dim=1)
@@ -370,7 +400,7 @@ class DETM(nn.Module):
                 indices = torch.split(torch.tensor(range(args.num_docs_valid)), args.eval_batch_size)
                 val_data = validation_data
                 times = validation_times
-                eta = self.get_eta('val')
+                eta = self.get_eta_completion('val')
                 acc_loss = 0
                 cnt = 0
                 for idx, ind in enumerate(indices):
@@ -380,9 +410,8 @@ class DETM(nn.Module):
                         normalized_data_batch = data_batch / sums
                     else:
                         normalized_data_batch = data_batch
-
                     eta_td = eta[times_batch.type('torch.LongTensor')]
-                    theta = self.get_theta(eta_td, normalized_data_batch)
+                    theta = self.get_theta_no_inference(eta_td, normalized_data_batch)
                     alpha_td = alpha[:, times_batch.type('torch.LongTensor'), :]
                     beta = self.get_beta(alpha_td).permute(1, 0, 2)
                     loglik = theta.unsqueeze(2) * beta
@@ -400,9 +429,9 @@ class DETM(nn.Module):
                 print('{} PPL: {}'.format(source.upper(), ppl_all))
                 print('*'*100)
                 return ppl_all
-            else: 
+            else:
                 indices = torch.split(torch.tensor(range(args.num_docs_test)), args.eval_batch_size)
-                eta_1 = self.get_eta('test')
+                eta_1 = self.get_eta_completion('test')
                 acc_loss = 0
                 cnt = 0
                 indices = torch.split(torch.tensor(range(args.num_docs_test)), args.eval_batch_size)
@@ -421,7 +450,7 @@ class DETM(nn.Module):
                         normalized_data_batch_1 = data_batch_1
 
                     eta_td_1 = eta_1[times_batch_1.type('torch.LongTensor')]
-                    theta = get_theta(eta_td_1, normalized_data_batch_1)
+                    theta = self.get_theta_no_inference(eta_td_1, normalized_data_batch_1)
                     test_2_data, test_2_times = data.get_time_columns(test_1_data)
                     data_batch_2, times_batch_2 = data.get_batch(test_2_data,
                                                                  ind,

@@ -29,7 +29,7 @@ vectorizer = TfidfVectorizer(lowercase=True,
                              max_features=500000)
 doc_terms_matrix = vectorizer.fit_transform(docs["cleanned_text"])
 terms = vectorizer.get_feature_names()
-timestamps = docs.created_at.values.astype(np.int64) // 10 ** 9
+timestamps = docs.created_at.dt.normalize().values.astype(np.int64) // 10 ** 9
 
 # Get vocabulary
 print('building the vocabulary...')

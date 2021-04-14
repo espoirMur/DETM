@@ -13,7 +13,7 @@ import sys
 import matplotlib.pyplot as plt 
 import seaborn as sns
 import scipy.io
-
+from tqdm import tqdm
 import data 
 
 from sklearn.decomposition import PCA
@@ -81,28 +81,28 @@ torch.manual_seed(args.seed)
 # 1. vocabulary
 print('Getting vocabulary ...')
 data_file = os.path.join(args.data_path, 'min_df_{}'.format(args.min_df))
-vocab, train_data_with_time, validation_data, test_1_data, test_2_data, test_data = data.get_data()
+vocab, train_data, validation_data, test_1_data, test_2_data, test_data = data.get_data()
 vocab_size = len(vocab)
 args.vocab_size = vocab_size
 
 # 1. training data
 print('Getting training data ...')
 
-train_data, train_times = data.get_time_columns(train_data_with_time)
+_, train_times = data.get_time_columns(train_data)
 args.num_times = len(np.unique(train_times))
-train_rnn_inp = data.get_rnn_input(train_data_with_time, args.num_times, args.vocab_size)
-
+print("the number of uniques train times are ", args.num_times)
+train_rnn_inp = data.get_rnn_input(train_data, args.num_times, args.vocab_size, "train")
+# should save the input here and load it if required
 # 2. dev set
 print('Getting validation data ...')
-valid_rnn_inp = data.get_rnn_input(validation_data, args.num_times, args.vocab_size)
+valid_rnn_inp = data.get_rnn_input(validation_data, args.num_times, args.vocab_size, "valid")
 
 # 3. test data
 print('Getting testing data ...')
 
-test_rnn_inp = data.get_rnn_input(test_data, args.num_times, args.vocab_size)
-
-test_1_rnn_inp = data.get_rnn_input(test_1_data, args.num_times, args.vocab_size)
-test_2_rnn_inp = data.get_rnn_input(test_2_data, args.num_times, args.vocab_size)
+test_rnn_inp = data.get_rnn_input(test_data, args.num_times, args.vocab_size, "test")
+test_1_rnn_inp = data.get_rnn_input(test_1_data, args.num_times, args.vocab_size, "test_1")
+test_2_rnn_inp = data.get_rnn_input(test_2_data, args.num_times, args.vocab_size, "test_2")
 
 embeddings = None
 if not args.train_embeddings:
@@ -140,8 +140,8 @@ if args.mode == 'train':
     best_epoch = 0
     best_val_ppl = 1e9
     all_val_ppls = []
-    for epoch in range(1, args.epochs):
-        model.train_for_epoch(epoch, args, )
+    for epoch in tqdm(range(1, args.epochs)):
+        model.train_for_epoch(epoch, args, train_data, train_rnn_inp)
         if epoch % args.visualize_every == 0:
             model.visualize(args, vocab)
         val_ppl = model.get_completion_ppl('val', args, validation_data, test_1_data, test_2_data)

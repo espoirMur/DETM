@@ -1,6 +1,7 @@
 import os
 import random
 import pickle
+import pickle
 import numpy as np
 import torch 
 import scipy.io
@@ -8,7 +9,9 @@ from pathlib import Path
 from gensim.models.fasttext import FastText as FT_gensim
 from tqdm import tqdm
 from scipy.io import loadmat
+from tqdm import tqdm
 from sklearn.model_selection import train_test_split
+from scipy.sparse import coo_matrix, hstack
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -34,7 +37,7 @@ def get_time_columns(matrix):
     given a matrix where the time column is the last row return the doc term matrix and the times
     """
     doc_term_matrix = matrix[:, :-1]
-    times = matrix[:, -1]
+    times = matrix[:, -1].toarray().astype(np.int32).squeeze()
     return doc_term_matrix, times
 
 
@@ -54,7 +57,9 @@ def split_train_test_matrix(dataset):
     return X_train, X_val, X_test_1, X_test_2, X_test
 
 
-def get_data(doc_terms_file_name="tf_idf_doc_terms_matrix", terms_filename="tf_idf_terms"):
+def get_data(doc_terms_file_name="tf_idf_doc_terms_matrix",
+             terms_filename="tf_idf_terms",
+             timestamp_filename='tf_idf_timestamps'):
     """read the data and return the vocabulary as well as the train, test and validation tests
 
     Args:
@@ -65,10 +70,11 @@ def get_data(doc_terms_file_name="tf_idf_doc_terms_matrix", terms_filename="tf_i
     """
     doc_term_matrix = read_mat_file("doc_terms_matrix", doc_terms_file_name)
     terms = read_mat_file("terms", terms_filename)
-    times = read_mat_file("timestamps", terms_filename)
+    times = read_mat_file("timestamps", timestamp_filename)
     vocab = terms
     #  make the time the last row of the doc_terms matrix for better spliting
-    doc_term_time_matrix = np.concatenate((doc_term_matrix, times), axis=1)
+    times = times.reshape((times.shape[1], 1))
+    doc_term_time_matrix = hstack([doc_term_matrix, times])
     train, validation, test_1, test_2, test = split_train_test_matrix(doc_term_time_matrix)
     return vocab, train, validation, test_1, test_2, test
 
@@ -93,7 +99,27 @@ def get_batch(doc_terms_matrix, indices, device, timestamps):
     return data_batch, times_batch
 
 
-def get_rnn_input(doc_terms_matrix, num_times, vocab_size):
+def train_or_load(args1, args2):
+    """This decorator load the data passed in parameter or return the train function
+
+    Args:
+        func ([type]): [description]
+    """
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            if args[3] in ["train", "test", "valid", "test_1", "test_2"]:
+                data_path = args1.joinpath(f"rnn_input_{args[3]}.pkl")
+                kwargs['data_path'] = data_path
+            if args2:
+                dataset = torch.load(data_path)
+                return dataset
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
+@train_or_load(Path.cwd().joinpath("data", "rnn_inputs"), True)
+def get_rnn_input(doc_terms_matrix, num_times, vocab_size, mode, **kwargs):
     """
     need to understand this part
 
@@ -113,8 +139,10 @@ def get_rnn_input(doc_terms_matrix, num_times, vocab_size):
     indices = torch.randperm(num_docs)
     indices = torch.split(indices, 1000)
     rnn_input = torch.zeros(num_times, vocab_size).to(device)
+    print(" I am here before getting the timestamp")
     cnt = torch.zeros(num_times, ).to(device)
-    for idx, ind in enumerate(indices):
+    print(" I am her with ==== 1")
+    for idx, ind in tqdm(enumerate(indices)):
         data_batch, times_batch = get_batch(doc_terms_matrix, ind, device, timestamps)
         # this part I will look into it after
         for t in range(num_times):
@@ -125,12 +153,15 @@ def get_rnn_input(doc_terms_matrix, num_times, vocab_size):
         if idx % 20 == 0:
             print('idx: {}/{}'.format(idx, len(indices)))
     rnn_input = rnn_input / cnt.unsqueeze(1)
+    print("the input shape is", rnn_input.shape)
+    torch.save(rnn_input, kwargs.get("data_path"))
     return rnn_input
 
 
-def read_embedding_matrix(vocab, device,  load_trainned=True):
+@train_or_load(Path().cwd().joinpath('data', 'preprocess', "embedding_matrix.npy"), True)
+def read_embedding_matrix(vocab, device,  data_path):
     """
-    read the embedding  matrix passed as parameter and return it as an vocabulary of each word 
+    read the embedding  matrix passed as parameter and return it as an vocabulary of each word
     with the corresponding embeddings
 
     Args:
@@ -139,26 +170,21 @@ def read_embedding_matrix(vocab, device,  load_trainned=True):
     # we need to use tensorflow embedding lookup heer
     """
     model_path = Path.home().joinpath("Projects",
-                                      "Personal", 
-                                      "balobi_nini", 
-                                      'models', 
+                                      "Personal",
+                                      "balobi_nini",
+                                      'models',
                                       'embeddings_one_gram_fast_tweets_only').__str__()
     embeddings_path = Path().cwd().joinpath('data', 'preprocess', "embedding_matrix.npy")
-
-    if load_trainned:
-        embeddings_matrix = np.load(embeddings_path, allow_pickle=True)
-    else:
-        model_gensim = FT_gensim.load(model_path)
-        vectorized_get_embeddings = np.vectorize(model_gensim.wv.get_vector)
-        embeddings_matrix = np.zeros(shape=(len(vocab),50)) #should put the embeding size as a vector
-        print("starting getting the word embeddings ++++ ")
-        vocab = vocab.ravel()
-        for index, word in tqdm(enumerate(vocab)):
-            vector = model_gensim.wv.get_vector(word)
-            embeddings_matrix[index] = vector
-        print("done getting the word embeddings ")
-        with open(embeddings_path, 'wb') as file_path:
-            np.save(file_path, embeddings_matrix)
-
+    model_gensim = FT_gensim.load(model_path)
+    vectorized_get_embeddings = np.vectorize(model_gensim.wv.get_vector)
+    embeddings_matrix = np.zeros(shape=(len(vocab),50)) #should put the embeding size as a vector
+    print("starting getting the word embeddings ++++ ")
+    vocab = vocab.ravel()
+    for index, word in tqdm(enumerate(vocab)):
+        vector = model_gensim.wv.get_vector(word)
+        embeddings_matrix[index] = vector
+    print("done getting the word embeddings ")
+    with open(embeddings_path, 'wb') as file_path:
+        np.save(file_path, embeddings_matrix)
     embeddings = torch.from_numpy(embeddings_matrix).to(device)
     return embeddings

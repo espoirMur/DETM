@@ -152,3 +152,20 @@ def visualize(docs, _lda_keys, topics, theta):
     plt.scatter(x=tsne_lda[:, 0], y=tsne_lda[:, 1],
                  color=colormap[_lda_keys][:num_example])
     plt.show()
+
+
+def get_indices(first_array, second_array):
+    """
+    get the indices in the first array of the elements in the second array
+
+    Args:
+        first_array ([type]): [description]
+        second_array ([type]): [description]
+    """
+    uniques_elements = np.unique(first_array)
+    indices = uniques_elements.searchsorted(second_array)
+    print("the indices shape is ", indices.shape)
+    print("the indices are ", indices[:5])
+    # this need to be fixed
+    assert second_array.shape == indices.shape
+    return indices
