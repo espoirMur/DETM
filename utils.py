@@ -164,8 +164,5 @@ def get_indices(first_array, second_array):
     """
     uniques_elements = np.unique(first_array)
     indices = uniques_elements.searchsorted(second_array)
-    print("the indices shape is ", indices.shape)
-    print("the indices are ", indices[:5])
-    # this need to be fixed
     assert second_array.shape == indices.shape
     return indices

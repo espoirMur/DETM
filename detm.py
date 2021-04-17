@@ -7,7 +7,6 @@ import numpy as np
 import math 
 import data
 from utils import nearest_neighbors, get_indices
-
 from torch import nn
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -144,8 +143,7 @@ class DETM(nn.Module):
         kl_0 = self.get_kl(self.mu_q_alpha[:, 0, :], self.logsigma_q_alpha[:, 0, :], p_mu_0, logsigma_p_0)
         kl_alpha.append(kl_0)
         for t in range(1, self.num_times):
-            alphas[t] = self.reparameterize(self.mu_q_alpha[:, t, :], self.logsigma_q_alpha[:, t, :]) 
-            
+            alphas[t] = self.reparameterize(self.mu_q_alpha[:, t, :], self.logsigma_q_alpha[:, t, :])
             p_mu_t = alphas[t-1]
             logsigma_p_t = torch.log(self.delta * torch.ones(self.num_topics, self.rho_size).to(device))
             kl_t = self.get_kl(self.mu_q_alpha[:, t, :], self.logsigma_q_alpha[:, t, :], p_mu_t, logsigma_p_t)
@@ -174,7 +172,6 @@ class DETM(nn.Module):
         mu_0 = self.mu_q_eta(inp_0)
         logsigma_0 = self.logsigma_q_eta(inp_0)
         etas[0] = self.reparameterize(mu_0, logsigma_0)
-
         p_mu_0 = torch.zeros(self.num_topics,).to(device)
         logsigma_p_0 = torch.zeros(self.num_topics,).to(device)
         kl_0 = self.get_kl(mu_0, logsigma_0, p_mu_0, logsigma_p_0)
@@ -184,7 +181,6 @@ class DETM(nn.Module):
             mu_t = self.mu_q_eta(inp_t)
             logsigma_t = self.logsigma_q_eta(inp_t)
             etas[t] = self.reparameterize(mu_t, logsigma_t)
-
             p_mu_t = etas[t-1]
             logsigma_p_t = torch.log(self.delta * torch.ones(self.num_topics,).to(device))
             kl_t = self.get_kl(mu_t, logsigma_t, p_mu_t, logsigma_p_t)
@@ -198,9 +194,7 @@ class DETM(nn.Module):
         Returns the topic proportions.
         theta is the topic proportion per document
         """
-        print(times.shape, "getting the times")
         eta_td = eta[times.type('torch.LongTensor')]
-        print(eta_td.shape, "getting the eta_td")
         inp = torch.cat([bows, eta_td], dim=1)
         q_theta = self.q_theta(inp)
         if self.enc_drop > 0:
@@ -208,8 +202,10 @@ class DETM(nn.Module):
         mu_theta = self.mu_q_theta(q_theta)
         logsigma_theta = self.logsigma_q_theta(q_theta)
         z = self.reparameterize(mu_theta, logsigma_theta)
+        z[torch.isnan(z)] = 0
         theta = F.softmax(z, dim=-1)
         kl_theta = self.get_kl(mu_theta, logsigma_theta, eta_td, torch.zeros(self.num_topics).to(device))
+        assert not torch.isnan(theta).any()
         return theta, kl_theta
 
     def get_beta(self, alpha):
@@ -227,10 +223,12 @@ class DETM(nn.Module):
     def get_nll(self, theta, beta, bows):
         theta = theta.unsqueeze(1)
         loglik = torch.bmm(theta, beta).squeeze(1)
-        loglik = loglik
+        nan_values = torch.isnan(loglik)
+        loglik[nan_values] = 0
         loglik = torch.log(loglik+1e-6)
         nll = -loglik * bows
         nll = nll.sum(-1)
+        print("where the null values are comming from? ", nll.shape)
         return nll
 
     def forward(self, bows, normalized_bows, times, rnn_inp, num_docs):
@@ -238,14 +236,24 @@ class DETM(nn.Module):
         coeff = num_docs / bsz
         alpha, kl_alpha = self.get_alpha()
         eta, kl_eta = self.get_eta(rnn_inp)
+        eta[torch.isnan(eta)] = 0
+        kl_eta[torch.isnan(kl_eta)] = 0
         theta, kl_theta = self.get_theta(eta, normalized_bows, times)
+        kl_theta[torch.isnan(kl_theta)] = 0
+        print("the theta are here", theta.shape)
+        print("the theta are here", torch.isnan(kl_theta).any())
         kl_theta = kl_theta.sum() * coeff
-
+        kl_theta[torch.isnan(kl_theta)] = 0
         beta = self.get_beta(alpha)
         beta = beta[times.type('torch.LongTensor')]
         nll = self.get_nll(theta, beta, bows)
+        nll[torch.isnan(nll)] = 0
         nll = nll.sum() * coeff
         nelbo = nll + kl_alpha + kl_eta + kl_theta
+        assert not torch.isnan(kl_theta).any()
+        assert not torch.isnan(nll).any()
+        assert not torch.isnan(kl_alpha).any()
+        assert not torch.isnan(kl_eta).any()
         return nelbo, nll, kl_alpha, kl_eta, kl_theta
 
     def init_hidden(self):
@@ -269,7 +277,7 @@ class DETM(nn.Module):
         cnt = 0
         indices = torch.randperm(train_data.shape[0])
         indices = torch.split(indices, args.batch_size)
-        optimizer = self.get_activation(args.optimizer)
+        optimizer = self.get_optimizer(args)
         for idx, ind in enumerate(indices):
             optimizer.zero_grad()
             self.zero_grad()
